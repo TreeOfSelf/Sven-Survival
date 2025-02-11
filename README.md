@@ -5,6 +5,9 @@ A simple and configurable plugin to add survival to Sven Co-op maps that don't n
 On maps that do support vanilla survival mode, this plugin will fully disable for that map and just use vanilla survival.
 This survival mode also allows late joiners to still spawn in, instead of having to wait for the next map (rejoining after dying won't work though).
 
+Want to quickly respawn players?  
+`as_reloadplugin survival` will do that, and reset the countdown timer. 
+
 ## Installation 
 Works with the v5.26 Build of Sven Co-Op.    
 
