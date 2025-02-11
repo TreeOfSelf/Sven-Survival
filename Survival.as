@@ -7,9 +7,9 @@ array<string> trackedSpawned;
 CCVar@ cvar_enabled;
 CCVar@ cvar_timer;
 CCVar@ cvar_resetTime;
-CCVar@ cvar_lateSpawn
+CCVar@ cvar_lateSpawn;
 
-CScheduledFunction@ g_pThinkFunc = null;
+CScheduledFunction@ g_pThinkFunc;
 
 //Init
 void PluginInit() {
@@ -17,8 +17,12 @@ void PluginInit() {
 	g_Module.ScriptInfo.SetContactInfo("https://github.com/TreeOfSelf/Sven-Survival");
     g_Hooks.RegisterHook( Hooks::Game::MapChange, @MapChange );
     g_Hooks.RegisterHook(Hooks::Player::PlayerSpawn, @PlayerSpawn);
+	
     g_Hooks.RegisterHook(Hooks::Player::PlayerKilled, @PlayerKilled);
     g_Hooks.RegisterHook(Hooks::Player::ClientPutInServer, @ClientPutInServer);
+    g_Hooks.RegisterHook(Hooks::Player::ClientDisconnect, @ClientDisconnect);
+
+
 
     @cvar_enabled = CCVar("enabled", 1, "Enable/Disable forced survival mode", ConCommandFlag::AdminOnly);
     @cvar_timer = CCVar("timer", 60, "Amount of time to count down to survival mode", ConCommandFlag::AdminOnly);
@@ -84,6 +88,14 @@ HookReturnCode ClientPutInServer(CBasePlayer@ plr){
 	return HOOK_CONTINUE;
 }
 
+HookReturnCode ClientDisconnect(CBasePlayer@ plr){
+    if (resetTimerStopped && survivalActive && checkPlayersDead()) {
+        @g_pThinkFunc = g_Scheduler.SetInterval("mapChanger", cvar_resetTime.GetInt());
+    }
+    return HOOK_CONTINUE;
+}
+
+
 // Main Functions
 void MapInit(){
 	g_Game.PrecacheMonster( "monster_gman", true );
@@ -127,7 +139,7 @@ bool checkPlayersDead(){
 	int playerHit = 0;
 		for (int i = 1; i <= g_Engine.maxClients; i++) {
 			CBasePlayer@ plr = g_PlayerFuncs.FindPlayerByIndex(i);
-			if (plr !is null && plr.IsAlive()==true ){
+			if (plr !is null && plr.IsAlive()==true && plr.IsConnected()){
 				reset=0;
 			} 
 			if (plr !is null){
