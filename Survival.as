@@ -7,6 +7,9 @@ array<string> trackedSpawned;
 // Track player death locations for spawn movement detection
 dictionary playerDeathLocations; // steamId -> Vector
 
+// Track last known spawn location to detect when it moves
+Vector lastKnownSpawnLocation = Vector(0, 0, 0);
+
 CCVar@ cvar_enabled;
 CCVar@ cvar_timer;
 CCVar@ cvar_resetTime;
@@ -67,25 +70,22 @@ HookReturnCode PlayerSpawn( CBasePlayer@ pPlayer) {
         // Check if player has a corpse in the world
         CBaseEntity@ pCorpse = FindPlayerCorpse(pPlayer);
 
-        // If player has a corpse, move it to spawn so they can be revived
+        // If player has a corpse, block respawn - don't move it, leave it where it is
         if (pCorpse !is null) {
-            Vector spawnPoint = GetSpawnPoint();
-            g_EntityFuncs.SetOrigin(pCorpse, spawnPoint);
-
-            // Keep them in observer mode so they can be revived
+            // Block respawn attempt - corpse stays at death location
             Observer@ obs = pPlayer.GetObserver();
             obs.SetObserverModeControlEnabled( true );
             obs.StartObserver(pPlayer.GetOrigin(), pPlayer.pev.angles, true);
             obs.SetObserverModeControlEnabled( true );
             pPlayer.pev.nextthink = 10000000.0;
-            g_PlayerFuncs.ClientPrint(pPlayer, HUD_PRINTTALK, "[Survival] Your body has been moved to spawn. Wait for revival.\n");
+            g_PlayerFuncs.ClientPrint(pPlayer, HUD_PRINTTALK, "[Survival] You have a body that needs revival. Cannot respawn.\n");
             return HOOK_HANDLED;
         }
 
-        // Normal late spawn logic
+        // No corpse (gibbed) - allow late spawn logic
         if (cvar_lateSpawn.GetInt() == 1 && trackedSpawned.find(steamId) < 0) {
             trackedSpawned.insertLast(steamId);
-            return HOOK_CONTINUE;
+            return HOOK_CONTINUE; // Game will create corpse at spawn naturally
         }
 
         // Block respawn for players who already spawned
@@ -209,19 +209,38 @@ bool hasSpawnMovedFrom(Vector location) {
 }
 
 // Periodic check to automatically move corpses if spawn has moved
-// Runs every second to ensure corpses stay at spawn for revival
+// Runs every second to ensure corpses at spawn stay with spawn
 void CheckCorpsesNearSpawn() {
 	if (!survivalActive || g_SurvivalMode.IsEnabled() || cvar_enabled.GetInt() != 1)
 		return;
 
-	// Check all bodyque entities (corpses)
+	const float SPAWN_PROXIMITY_THRESHOLD = 512.0;
+
+	// Get current spawn location
+	Vector currentSpawn = GetSpawnPoint();
+
+	// Check if spawn has moved significantly
+	float spawnMovement = (currentSpawn - lastKnownSpawnLocation).Length();
+
+	// Initialize last known spawn if this is first check
+	if (lastKnownSpawnLocation.x == 0 && lastKnownSpawnLocation.y == 0 && lastKnownSpawnLocation.z == 0) {
+		lastKnownSpawnLocation = currentSpawn;
+		return;
+	}
+
+	// If spawn hasn't moved, nothing to do
+	if (spawnMovement < 100.0) // Small threshold for spawn movement detection
+		return;
+
+	// Spawn has moved! Find corpses that were near the OLD spawn and move them
 	CBaseEntity@ pCorpse = null;
 	while ((@pCorpse = g_EntityFuncs.FindEntityByClassname(pCorpse, "bodyque")) !is null) {
-		// Check if this corpse is far from spawn
-		if (hasSpawnMovedFrom(pCorpse.pev.origin)) {
-			// Spawn has moved away from this corpse - teleport it to new spawn
-			Vector newSpawn = GetSpawnPoint();
-			g_EntityFuncs.SetOrigin(pCorpse, newSpawn);
+		// Check if this corpse is near the OLD spawn location
+		float distanceToOldSpawn = (pCorpse.pev.origin - lastKnownSpawnLocation).Length();
+
+		if (distanceToOldSpawn < SPAWN_PROXIMITY_THRESHOLD) {
+			// Corpse was at old spawn - move it to new spawn
+			g_EntityFuncs.SetOrigin(pCorpse, currentSpawn);
 
 			// Notify the player whose corpse this is
 			int playerEntIndex = int(pCorpse.pev.renderamt);
@@ -231,6 +250,9 @@ void CheckCorpsesNearSpawn() {
 			}
 		}
 	}
+
+	// Update last known spawn location
+	lastKnownSpawnLocation = currentSpawn;
 }
 
 void displaySurvival() {
