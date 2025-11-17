@@ -4,6 +4,12 @@ int currentTime = 0;
 
 array<string> trackedSpawned;
 
+// Track players with intact bodies (can't respawn until gibbed)
+dictionary playerHasBody; // steamId -> bool
+
+// Track player death locations
+dictionary playerDeathLocations; // steamId -> Vector
+
 CCVar@ cvar_enabled;
 CCVar@ cvar_timer;
 CCVar@ cvar_resetTime;
@@ -51,18 +57,54 @@ void PluginInit() {
 HookReturnCode MapChange( const string& in szNextMap ) {
 	survivalActive = false;
 	currentTime = 0;
+	playerHasBody.deleteAll();
+	playerDeathLocations.deleteAll();
 	return HOOK_CONTINUE;
 }
 
 HookReturnCode PlayerSpawn( CBasePlayer@ pPlayer) {
     string steamId = g_EngineFuncs.GetPlayerAuthId(pPlayer.edict());
-    
+
     if(survivalActive && g_SurvivalMode.IsEnabled()==false && cvar_enabled.GetInt() == 1) {
-        if (cvar_lateSpawn.GetInt() == 1 && trackedSpawned.find(steamId) < 0) {
-            trackedSpawned.insertLast(steamId);        
-            return HOOK_CONTINUE;        
+        // Check if player has an intact body (not gibbed)
+        bool hasIntactBody = false;
+        if (playerHasBody.exists(steamId)) {
+            bool bodyState;
+            playerHasBody.get(steamId, bodyState);
+            hasIntactBody = bodyState;
         }
-        
+
+        // If player has an intact body, check if spawn has moved
+        if (hasIntactBody && playerDeathLocations.exists(steamId)) {
+            Vector deathLocation;
+            playerDeathLocations.get(steamId, deathLocation);
+
+            // Check if spawn area has moved away from the body
+            if (hasSpawnMovedFrom(deathLocation)) {
+                // Spawn has moved - allow respawn and clear body restriction
+                playerHasBody[steamId] = false;
+                playerDeathLocations.delete(steamId);
+                g_PlayerFuncs.ClientPrint(pPlayer, HUD_PRINTTALK, "[Survival] Spawn area moved - you can now respawn.\n");
+                // Continue with normal spawn logic below
+            } else {
+                // Body still exists and spawn hasn't moved - block respawn
+                Observer@ obs = pPlayer.GetObserver();
+                obs.SetObserverModeControlEnabled( true );
+                obs.StartObserver(pPlayer.GetOrigin(), pPlayer.pev.angles, true);
+                obs.SetObserverModeControlEnabled( true );
+                pPlayer.pev.nextthink = 10000000.0;
+                g_PlayerFuncs.ClientPrint(pPlayer, HUD_PRINTTALK, "[Survival] Your body is still intact. You cannot respawn until it is destroyed.\n");
+                return HOOK_HANDLED;
+            }
+        }
+
+        // Normal late spawn logic
+        if (cvar_lateSpawn.GetInt() == 1 && trackedSpawned.find(steamId) < 0) {
+            trackedSpawned.insertLast(steamId);
+            return HOOK_CONTINUE;
+        }
+
+        // Block respawn for players who already spawned
         Observer@ obs = pPlayer.GetObserver();
         obs.SetObserverModeControlEnabled( true );
         obs.StartObserver(pPlayer.GetOrigin(), pPlayer.pev.angles, true);
@@ -70,11 +112,24 @@ HookReturnCode PlayerSpawn( CBasePlayer@ pPlayer) {
         pPlayer.pev.nextthink = 10000000.0;
         return HOOK_HANDLED;
     }
-    
+
     return HOOK_CONTINUE;
 }
 
 HookReturnCode PlayerKilled( CBasePlayer@ pPlayer, CBaseEntity@ pAttacker, int iGib ) {
+	string steamId = g_EngineFuncs.GetPlayerAuthId(pPlayer.edict());
+
+	// Track body state: iGib == 0 means body is intact (not gibbed)
+	if (iGib == 0) {
+		playerHasBody[steamId] = true;
+		// Store death location
+		playerDeathLocations[steamId] = pPlayer.pev.origin;
+	} else {
+		// Player was gibbed - remove body restriction
+		playerHasBody[steamId] = false;
+		playerDeathLocations.delete(steamId);
+	}
+
 	if (resetTimerStopped && survivalActive  && checkPlayersDead()) {
 		@g_pThinkFunc = g_Scheduler.SetInterval("mapChanger", cvar_resetTime.GetInt());
 	}
@@ -89,6 +144,11 @@ HookReturnCode ClientPutInServer(CBasePlayer@ plr) {
 }
 
 HookReturnCode ClientDisconnect(CBasePlayer@ plr) {
+    // Clean up player's body state when they disconnect
+    string steamId = g_EngineFuncs.GetPlayerAuthId(plr.edict());
+    playerHasBody.delete(steamId);
+    playerDeathLocations.delete(steamId);
+
     if (resetTimerStopped && survivalActive && checkPlayersDead()) {
         @g_pThinkFunc = g_Scheduler.SetInterval("mapChanger", cvar_resetTime.GetInt());
     }
@@ -100,6 +160,37 @@ HookReturnCode ClientDisconnect(CBasePlayer@ plr) {
 void MapInit() {
 	g_Game.PrecacheMonster( "monster_gman", true );
 	trackedSpawned.resize(0);
+	playerHasBody.deleteAll();
+	playerDeathLocations.deleteAll();
+}
+
+// Check if spawn points have moved away from a given location
+// Returns true if no spawn points are near the location (spawn has moved)
+bool hasSpawnMovedFrom(Vector deathLocation) {
+	const float SPAWN_PROXIMITY_THRESHOLD = 512.0; // Units - adjust as needed
+
+	// Find all potential spawn point entities
+	array<string> spawnClassnames = {
+		"info_player_start",
+		"info_player_deathmatch",
+		"info_player_coop"
+	};
+
+	for (uint i = 0; i < spawnClassnames.length(); i++) {
+		CBaseEntity@ pEntity = null;
+		while ((@pEntity = g_EntityFuncs.FindEntityByClassname(pEntity, spawnClassnames[i])) !is null) {
+			// Calculate distance from death location to this spawn point
+			float distance = (pEntity.pev.origin - deathLocation).Length();
+
+			if (distance < SPAWN_PROXIMITY_THRESHOLD) {
+				// Found a spawn point near death location - spawn hasn't moved
+				return false;
+			}
+		}
+	}
+
+	// No spawn points found near death location - spawn has moved
+	return true;
 }
 
 void displaySurvival() {
