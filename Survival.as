@@ -4,10 +4,7 @@ int currentTime = 0;
 
 array<string> trackedSpawned;
 
-// Track players with intact bodies (can't respawn until gibbed)
-dictionary playerHasBody; // steamId -> bool
-
-// Track player death locations
+// Track player death locations for spawn movement detection
 dictionary playerDeathLocations; // steamId -> Vector
 
 CCVar@ cvar_enabled;
@@ -57,7 +54,6 @@ void PluginInit() {
 HookReturnCode MapChange( const string& in szNextMap ) {
 	survivalActive = false;
 	currentTime = 0;
-	playerHasBody.deleteAll();
 	playerDeathLocations.deleteAll();
 	return HOOK_CONTINUE;
 }
@@ -66,28 +62,22 @@ HookReturnCode PlayerSpawn( CBasePlayer@ pPlayer) {
     string steamId = g_EngineFuncs.GetPlayerAuthId(pPlayer.edict());
 
     if(survivalActive && g_SurvivalMode.IsEnabled()==false && cvar_enabled.GetInt() == 1) {
-        // Check if player has an intact body (not gibbed)
-        bool hasIntactBody = false;
-        if (playerHasBody.exists(steamId)) {
-            bool bodyState;
-            playerHasBody.get(steamId, bodyState);
-            hasIntactBody = bodyState;
-        }
+        // Check if player has a corpse in the world
+        CBaseEntity@ pCorpse = FindPlayerCorpse(pPlayer);
 
-        // If player has an intact body, check if spawn has moved
-        if (hasIntactBody && playerDeathLocations.exists(steamId)) {
+        // If player has a corpse, check if spawn has moved
+        if (pCorpse !is null && playerDeathLocations.exists(steamId)) {
             Vector deathLocation;
             playerDeathLocations.get(steamId, deathLocation);
 
             // Check if spawn area has moved away from the body
             if (hasSpawnMovedFrom(deathLocation)) {
-                // Spawn has moved - allow respawn and clear body restriction
-                playerHasBody[steamId] = false;
+                // Spawn has moved - allow respawn and clear death location
                 playerDeathLocations.delete(steamId);
                 g_PlayerFuncs.ClientPrint(pPlayer, HUD_PRINTTALK, "[Survival] Spawn area moved - you can now respawn.\n");
                 // Continue with normal spawn logic below
             } else {
-                // Body still exists and spawn hasn't moved - block respawn
+                // Corpse still exists and spawn hasn't moved - block respawn
                 Observer@ obs = pPlayer.GetObserver();
                 obs.SetObserverModeControlEnabled( true );
                 obs.StartObserver(pPlayer.GetOrigin(), pPlayer.pev.angles, true);
@@ -119,16 +109,8 @@ HookReturnCode PlayerSpawn( CBasePlayer@ pPlayer) {
 HookReturnCode PlayerKilled( CBasePlayer@ pPlayer, CBaseEntity@ pAttacker, int iGib ) {
 	string steamId = g_EngineFuncs.GetPlayerAuthId(pPlayer.edict());
 
-	// Track body state: iGib == 0 means body is intact (not gibbed)
-	if (iGib == 0) {
-		playerHasBody[steamId] = true;
-		// Store death location
-		playerDeathLocations[steamId] = pPlayer.pev.origin;
-	} else {
-		// Player was gibbed - remove body restriction
-		playerHasBody[steamId] = false;
-		playerDeathLocations.delete(steamId);
-	}
+	// Store death location for spawn movement detection
+	playerDeathLocations[steamId] = pPlayer.pev.origin;
 
 	if (resetTimerStopped && survivalActive  && checkPlayersDead()) {
 		@g_pThinkFunc = g_Scheduler.SetInterval("mapChanger", cvar_resetTime.GetInt());
@@ -144,9 +126,8 @@ HookReturnCode ClientPutInServer(CBasePlayer@ plr) {
 }
 
 HookReturnCode ClientDisconnect(CBasePlayer@ plr) {
-    // Clean up player's body state when they disconnect
+    // Clean up player's death location when they disconnect
     string steamId = g_EngineFuncs.GetPlayerAuthId(plr.edict());
-    playerHasBody.delete(steamId);
     playerDeathLocations.delete(steamId);
 
     if (resetTimerStopped && survivalActive && checkPlayersDead()) {
@@ -160,8 +141,28 @@ HookReturnCode ClientDisconnect(CBasePlayer@ plr) {
 void MapInit() {
 	g_Game.PrecacheMonster( "monster_gman", true );
 	trackedSpawned.resize(0);
-	playerHasBody.deleteAll();
 	playerDeathLocations.deleteAll();
+}
+
+// Find a player's corpse entity by searching for bodyque entities
+// Returns the corpse entity if found, null otherwise
+// Based on Half-Life source: corpses store player entindex in pev.renderamt
+CBaseEntity@ FindPlayerCorpse(CBasePlayer@ pPlayer) {
+	if (pPlayer is null)
+		return null;
+
+	int playerEntIndex = pPlayer.entindex();
+
+	// Search all bodyque entities (player corpses)
+	CBaseEntity@ pCorpse = null;
+	while ((@pCorpse = g_EntityFuncs.FindEntityByClassname(pCorpse, "bodyque")) !is null) {
+		// The corpse stores the player's entity index in renderamt
+		if (int(pCorpse.pev.renderamt) == playerEntIndex) {
+			return pCorpse;
+		}
+	}
+
+	return null; // No corpse found
 }
 
 // Check if spawn points have moved away from a given location
