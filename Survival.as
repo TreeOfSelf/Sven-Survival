@@ -201,9 +201,7 @@ void MoveCorpsesToNewSpawn() {
 	if (spawnMovement < 100.0)
 		return;
 
-	// Spawn has moved! Move ALL corpses to new spawn
-	g_Game.AlertMessage(at_console, "[Survival] Spawn moved! Moving all corpses...\n");
-	
+	// Spawn has moved! Move ALL corpses to new spawn	
 	// Collect all deadplayer entities first
 	array<CBaseEntity@> allCorpses;
 	CBaseEntity@ pCorpse = null;
@@ -218,13 +216,8 @@ void MoveCorpsesToNewSpawn() {
 		// Try to notify and move the player who owns this corpse
 		int corpseOwnerIndex = int(allCorpses[i].pev.renderamt);
 		CBasePlayer@ corpseOwner = g_PlayerFuncs.FindPlayerByIndex(corpseOwnerIndex);
-		if (corpseOwner !is null && corpseOwner.IsConnected()) {
-			g_PlayerFuncs.ClientPrint(corpseOwner, HUD_PRINTTALK, "[Survival] Spawn moved - your body has been relocated.\n");
-		}
 	}
 	
-	g_Game.AlertMessage(at_console, "[Survival] Moved %1 corpses to new spawn\n", allCorpses.length());
-
 	// Update last known spawn location
 	lastKnownSpawnLocation = currentSpawn;
 }
@@ -285,7 +278,5 @@ void PositionCorpseAtSpawn(dictionary@ args) {
 	// Put player in observer at spawn
 	obs.SetObserverModeControlEnabled(true);
 	obs.StartObserver(spawnPoint, plr.pev.angles, true);
-	obs.SetObserverModeControlEnabled(true);
-	
-	g_PlayerFuncs.ClientPrint(plr, HUD_PRINTTALK, "[Survival] Your corpse has been placed at spawn.\n");
+	obs.SetObserverModeControlEnabled(true);	
 }
