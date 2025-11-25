@@ -120,19 +120,9 @@ void CheckPlayersWithoutBodies() {
 			}
 			plr.Revive();
 			hasSpawnedBefore.insertLast(steamId);
-			g_PlayerFuncs.ClientPrint(plr, HUD_PRINTTALK, "[Survival] You have spawned as a late joiner.\n");
 		} else if (hasSpawnedBefore.find(steamId) >= 0) {
 			// GIBBED/VOID PLAYER: Create a corpse at spawn (only if they've spawned before)
-			Vector spawnPoint = GetValidSpawnPoint(plr);
-			if (spawnPoint != Vector(0, 0, 0)) {
-				g_EntityFuncs.SetOrigin(plr, spawnPoint);
-			}
-			plr.Revive();
-			
-			dictionary args;
-			args['playerIndex'] = plr.entindex();
-			args['spawnPoint'] = spawnPoint;
-			g_Scheduler.SetTimeout("CreateCorpseAtSpawn", 0.1, @args);
+			CreateCorpseAtSpawn(plr);
 		}
 		// else: Player was connected at start but hasn't spawned yet - let them spawn naturally
 	}
@@ -223,60 +213,72 @@ void MoveCorpsesToNewSpawn() {
 }
 
 // Create a corpse at spawn for gibbed/void players
-void CreateCorpseAtSpawn(dictionary@ args) {
+void CreateCorpseAtSpawn(CBasePlayer@ plr) {
 	// Don't run if map already had survival support
 	if (mapAlreadyHadSurvival)
 		return;
 		
-	int playerIndex = int(args['playerIndex']);
-	Vector spawnPoint = Vector(args['spawnPoint']);
-	
-	CBasePlayer@ plr = g_PlayerFuncs.FindPlayerByIndex(playerIndex);
-	if (plr is null) return;
-	
-	// Kill the player WITHOUT gibbing to create a corpse
-	plr.pev.health = 0;
-	plr.pev.deadflag = DEAD_DYING;
-	plr.SetAnimation(PLAYER_DIE);
-	plr.DeathSound();
-	
-	// Wait for corpse to be created, then position it
-	dictionary moveArgs;
-	moveArgs['playerIndex'] = playerIndex;
-	moveArgs['spawnPoint'] = spawnPoint;
-	g_Scheduler.SetTimeout("PositionCorpseAtSpawn", 0.2, @moveArgs);
-}
-
-// Position the corpse at spawn after it's created
-void PositionCorpseAtSpawn(dictionary@ args) {
-	// Don't run if map already had survival support
-	if (mapAlreadyHadSurvival)
+	if (plr is null)
 		return;
-		
-	int playerIndex = int(args['playerIndex']);
-	Vector spawnPoint = Vector(args['spawnPoint']);
-	
-	CBasePlayer@ plr = g_PlayerFuncs.FindPlayerByIndex(playerIndex);
-	if (plr is null) return;
 	
 	Observer@ obs = plr.GetObserver();
-	
-	// Only proceed if corpse was created
-	if (!obs.HasCorpse())
+	if (obs is null)
 		return;
 	
-	// Find and position their corpse at spawn
+	// Only do this if they're currently observing
+	if (!obs.IsObserver())
+		return;
+	
+	// Get their current observer position and angles BEFORE stopping
+	Vector currentObsPos = plr.pev.origin;
+	Vector currentAngles = plr.pev.angles;
+	
+	// Stop observer mode (false = don't respawn them)
+	obs.StopObserver(false);
+	
+	// Start observer at their CURRENT position with body creation enabled
+	// This creates a deadplayer entity at their current location
+	obs.StartObserver(currentObsPos, currentAngles, true);
+	
+	// Get spawn point where we want to move the corpse
+	Vector spawnPoint = GetValidSpawnPoint(plr);
+	if (spawnPoint == Vector(0, 0, 0))
+		return;
+	
+	// Wait a moment for the corpse to be created, then move it
+	dictionary args;
+	args['playerIndex'] = plr.entindex();
+	args['spawnPoint'] = spawnPoint;
+	g_Scheduler.SetTimeout("MoveNewlyCreatedCorpse", 0.1, @args);
+	
+	// Mark them as having spawned before
+	string steamId = g_EngineFuncs.GetPlayerAuthId(plr.edict());
+	if (hasSpawnedBefore.find(steamId) < 0) {
+		hasSpawnedBefore.insertLast(steamId);
+	}
+}
+
+// Move the newly created corpse to spawn point
+void MoveNewlyCreatedCorpse(dictionary@ args) {
+	// Don't run if map already had survival support
+	if (mapAlreadyHadSurvival)
+		return;
+		
+	int playerIndex = int(args['playerIndex']);
+	Vector spawnPoint = Vector(args['spawnPoint']);
+	
+	CBasePlayer@ plr = g_PlayerFuncs.FindPlayerByIndex(playerIndex);
+	if (plr is null)
+		return;
+	
+	// Find their newly created deadplayer entity
 	CBaseEntity@ pCorpse = null;
 	int playerEntIndex = plr.entindex();
 	while ((@pCorpse = g_EntityFuncs.FindEntityByClassname(pCorpse, "deadplayer")) !is null) {
 		if (int(pCorpse.pev.renderamt) == playerEntIndex) {
+			// Found their corpse! Move it to spawn point
 			g_EntityFuncs.SetOrigin(pCorpse, spawnPoint);
 			break;
 		}
 	}
-	
-	// Put player in observer at spawn
-	obs.SetObserverModeControlEnabled(true);
-	obs.StartObserver(spawnPoint, plr.pev.angles, true);
-	obs.SetObserverModeControlEnabled(true);	
 }
